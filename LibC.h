@@ -25,5 +25,7 @@
 #include <stdlib.h>
 
 void *crealloc(void *ptr);
+void printf_setprint(Print * p);
+int pprintf(Print& p, const char *format, ...);
 
 #endif
