@@ -146,6 +146,7 @@ static int _padc(pint_t * pint, int c, int *n) {
 // too high considering the stack saving.
 // at worst 32 bit octal will be 11 digits, plus the one potential decimal (which can't happen with octal
 // but is a potential input, so cater for it...
+// DECS MUST NEVER BE BIGGER THAN 10
 static int _puint(pint_t * pint, uint32_t num, int decs, int dummy) {
     char tmp[12];
     int ret = 0;
@@ -161,9 +162,10 @@ static int _puint(pint_t * pint, uint32_t num, int decs, int dummy) {
     if(dummy) return ret;
     // now spit em out in reverse order
     for(decs = ret - 1; decs >= 0; decs--) {
-        tmp[decs] += '0';
-        if(tmp[decs] > '9') tmp[decs] += pint->flags & FLAG_CAP ? 'A' - ':' : 'a' - ':';
-        _putc(pint, tmp[decs]);
+        dummy = tmp[decs];
+        dummy += '0';
+        if(dummy > '9') dummy += pint->flags & FLAG_CAP ? 'A' - ':' : 'a' - ':';
+        _putc(pint, dummy);
     }
     return ret;
 }
