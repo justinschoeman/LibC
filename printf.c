@@ -67,7 +67,7 @@
 #define FLAG_MINUS	0x00000004U
 #define FLAG_SPACE	0x00000008U
 #define FLAG_PLUS	0x00000010U
-#define FLAG_EXP	0x00000020U
+#define FLAG_STRIP0	0x00000020U
 #define FLAG_CAP	0x00000040U
 
 
@@ -172,12 +172,22 @@ static int _puint(pint_t * pint, uint32_t num, int decs, int dummy) {
 
 
 static int _printf(pint_t * pint, float fnum, char fmt) {
-    uint32_t num;
+    uint32_t num = 0;
+    int exp = 0;
+    int sigc = 1; // default, print the zero
     int pad;
     int ret = 0;
     char padc = 0;
-    int exp = 0;
     int zeros = 0;
+    const float limf = 4000000000.0f;
+    //const float limf = 4000.0f;
+
+    // strip least significant digit
+    void chomp(void) {
+        num /= pint->radix;
+        sigc--;
+        exp++;
+    }
     
     // strip off sign
     if(fnum < 0) {
@@ -189,6 +199,106 @@ static int _printf(pint_t * pint, float fnum, char fmt) {
     }
     // seems to be a common definition for all sub formats
     if(pint->prec == 255) pint->prec = 6;
+    
+    // before we do anything else, convert to a uint with as many significant digits as possible...
+    // no rounding yet, as we are packing a 23bit significand into 32 bits...
+    // 2^32-1 = 4,294,967,295 - final rounding may bump up last digit, so 3,999,999,999 is the limit
+    if(fnum != 0.0f) { // otherwise defaults to 0e0
+        // scale to fit in uint
+        while(fnum >= limf) {
+            fnum /= (float)pint->radix;
+            exp++;
+        }
+        while(fnum*pint->radix < limf) {
+            fnum *= (float)pint->radix;
+            exp--;
+        }
+        // cast to uint
+        num = (uint32_t)fnum;
+        if(num != 0) {
+            // trim trailing zeros (and compensate exponent)
+            while(num%pint->radix == 0) chomp();
+            // count significant digits, starting with 1 (always print 0)
+            sigc = _puint(pint, num, 0, 1);
+        }
+    }
+    //fprintf(stderr, "%f %u %d %d\n", fnum, num, exp, sigc);
+    
+    // pre-process 'g' and morph to 'e' if required
+    if(fmt == 'g') {
+        if(!(pint->flags & FLAG_ALT)) pint->flags |= FLAG_STRIP0; // strip trailing zeros for 'g' and not alt format
+        pad = exp + (sigc - 1); // tmp calculate exponent
+        if(pad < -4 || pad >= pint->prec) { // from man page, exponent < -4 or >= precision, render as e otherwise f
+            fmt = 'e';
+        }
+    }
+    
+    // calculate length, and padding
+    if(fmt == 'f' || fmt == 'g') {
+        // direct formats
+    } else {
+        // all other formats are exponent formats
+        // initially, trim until we have one more decimal than required
+        while(sigc > pint->prec + 2) chomp(); // decimals + one in front + one behind
+        // if we have one spare decimal, round it...
+        if(sigc == pint->prec + 2) {
+            if(padc == '-')
+                num -= pint->radix/2;
+            else
+                num += pint->radix/2;
+            // recount digits as rounding may have changed things
+            sigc = _puint(pint, num, 0, 1);
+        }
+        // final trim
+        while(sigc > pint->prec + 1) chomp(); // decimals + one in front + one behind
+        exp += sigc - 1; // final(ish) exponent
+        // calculate final length
+        pad = 5; // 1 digit + e+dd
+        //fprintf(stderr, "%f %u %d %d\n", fnum, num, exp, sigc);
+        if(pint->flags & FLAG_STRIP0) {
+            pad += sigc; // sigc = 1 + decimals, we already counted the 1 above, so this is decimal point + decimals
+            if(sigc == 1) pad--;  // only one digit, no decimal point
+        } else if(pint->prec > 0) {
+            pad += pint->prec + 1;
+        } else {
+            if(pint->flags & FLAG_ALT) pad++; // no decimals, but force decimal point
+        }
+        if(padc) pad++;
+    }
+    
+    // calculate total padding (and set ret to pre-calculated chars)
+    if(pint->width > 0 && pad < pint->width) {
+        pad = pint->width - pad;
+        ret = pint->width;
+    } else {
+        ret = pad;
+        pad = 0;
+    }
+    // output initial pad
+    if(!(pint->flags & FLAG_MINUS)) _padc(pint, ' ', &pad);
+    // output first char
+    if(padc) _putc(pint, padc);
+    // now build the numeric portion based on format
+    if(fmt == 'e' || fmt == 'a') {
+        // exponent type formats
+        // we have sigc-1 decimals...
+        sigc--;
+        _puint(pint, num, sigc, 0); // display what we have
+        if(pint->flags & FLAG_ALT || (sigc == 0 && pint->prec > 0 && !(pint->flags & FLAG_STRIP0))) _putc(pint, '.');
+        if(!(pint->flags & FLAG_STRIP0)) {
+            sigc = pint->prec - sigc;
+            _padc(pint, '0', &sigc);
+        }
+        _putc(pint, pint->flags & FLAG_CAP ? (fmt == 'a' ? 'P' : 'E') : (fmt == 'a' ? 'p' : 'e'));
+        _putc(pint, exp >= 0 ? '+' : '-');
+        exp = exp < 0 ? -exp : exp;
+        if(exp < pint->radix) _putc(pint, '0');
+        _puint(pint, exp, 0, 0);
+    }
+    
+    // if there is any padding left, send it now
+    ret += _padc(pint, ' ', &pad);
+    return ret;
 
 retry:    
     // float formats
@@ -211,7 +321,7 @@ retry:
         case 'g':
         case 'e': {
             float tmpf = pint->radix / 2;
-            pint->flags |= FLAG_EXP;
+            //pint->flags |= FLAG_EXP;
             fmt = 'f'; // pre-process then send to the float parser
             if(fnum == 0) goto retry; // 0 number, 0 exponent, process as such
             if(pint->prec > 8) pint->prec = 8; // only have 9 usable digits...
@@ -232,33 +342,17 @@ retry:
     if(pint->prec == 0 && pint->flags & FLAG_ALT) pad++; // include space for decimal point
     if(padc) pad++;
     if(zeros) pad += zeros;
-    if(pint->flags & FLAG_EXP) pad += 4; // e+dd
-    if(pint->width > 0 && pad < pint->width) {
-        pad = pint->width - pad;
-    } else {
-        pad = 0;
-    }
-    if(!(pint->flags & FLAG_MINUS))
-        ret += _padc(pint, ' ', &pad);
-    if(padc) {
-        _putc(pint, padc);
-        ret++;
-    }
+    //if(pint->flags & FLAG_EXP) pad += 4; // e+dd
+
+
     ret += _puint(pint, num, pint->prec, 0);
     ret += _padc(pint, '0', &zeros);
     if(pint->prec == 0 && pint->flags & FLAG_ALT) {
         _putc(pint, '.');
         ret++;
     }
-    if(pint->flags & FLAG_EXP) {
-        _putc(pint, fmt >= 'a' ? 'e' : 'E');
-        _putc(pint, exp >= 0 ? '+' : '-');
-        exp = exp < 0 ? -exp : exp;
-        if(exp < pint->radix) _putc(pint, '0');
-        _puint(pint, exp, 0, 0);
-        
-        ret+=4;
-    }
+    //if(pint->flags & FLAG_EXP) {
+    //}
     ret += _padc(pint, ' ', &pad);
     return ret;
 }
@@ -666,9 +760,10 @@ int main(void) {
     TPRINT("foo %% '%p' '%X' '%m'", &i, &i)
 
     TPRINT("foo %% '%f' '%f' '%f'", 99.0, 99999999.0, 0.099)
-    TPRINT("foo %% '%10.0e' '%10.4e' '%10.4e'", 99.0, 9999999999999.0, 0.099)
-    TPRINT("foo %% '%10.0g' '%10.4g' '%10.4g'", 99.0, 9999999999999.0, 0.099)
-    TPRINT("foo %% '%10.0a' '%10.4a' '%10.4a'", 99.0, 9999999999999.0, 0.099)
+    TPRINT("foo %% '%20.0e' '%20.4e' '%20.4e'", 99.0, 9999999999999.0, 0.099)
+    TPRINT("foo %% '%20.0g' '%20.4g' '%20.4g'", 99.0, 9999999999999.0, 0.099)
+    //TPRINT("foo %% '%20.0a' '%20.4a' '%20.4a'", 99.0, 9999999999999.0, 0.099)
+    TPRINT("foo %% '%e' '%e' '%e' '%e'", 1234567890e20f, 432109876543e-20f, 123456789012345.0f, 234567890123456789e5f)
 #endif
     
     return 0;
