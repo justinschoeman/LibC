@@ -83,6 +83,7 @@
 
 #ifdef TEST
 #include <assert.h>
+#include <stdlib.h>
 #define FNPRE(x) tst_ ## x
 #define TESTFN(x) x
 // need prototypes for test variants
@@ -177,7 +178,7 @@ static int _prints(pint_t * pint, char *s) {
 // but is a potential input, so cater for it...
 // DECS MUST NEVER BE BIGGER THAN 10
 static int _puint(pint_t * pint, uint32_t num, int decs, int dummy) {
-    char tmp[12];
+    int8_t tmp[12];
     int ret = 0;
     
     for(;;) {
@@ -193,6 +194,11 @@ static int _puint(pint_t * pint, uint32_t num, int decs, int dummy) {
     // now spit em out in reverse order
     for(decs = ret - 1; decs >= 0; decs--) {
         dummy = tmp[decs];
+        //_putc(pint, ' ');
+        //_putc(pint, '0'+dummy/100);
+        //_putc(pint, '0'+(dummy/10)%10);
+        //_putc(pint, '0'+dummy%10);
+        //_putc(pint, ' ');
         dummy += '0';
         if(dummy > '9') dummy += pint->flags & FLAG_CAP ? 'A' - ':' : 'a' - ':';
         _putc(pint, dummy);
@@ -200,6 +206,11 @@ static int _puint(pint_t * pint, uint32_t num, int decs, int dummy) {
     return ret;
 }
 
+#ifdef BUILD_A
+#define FRADIX pint->radix
+#else
+#define FRADIX 10
+#endif
 
 static int _printf(pint_t * pint, float fnum, char fmt) {
     uint32_t num = 0;
@@ -211,10 +222,10 @@ static int _printf(pint_t * pint, float fnum, char fmt) {
     int zeros;
     const float limf = 4000000000.0f;
     //const float limf = 4000.0f;
-
+    
     // strip least significant digit
     void chompnum(void) {
-        num /= pint->radix;
+        num /= FRADIX;
         sigc--;
         exp++;
     }
@@ -238,7 +249,7 @@ static int _printf(pint_t * pint, float fnum, char fmt) {
             goto done;
         }
         // we now have one spare sigc, round it...
-        num += pint->radix/2;
+        num += FRADIX/2;
         chompnum(); // now remove this digit
         // recount digits as rounding may have changed things
         sigc = _puint(pint, num, 0, 1);
@@ -317,18 +328,18 @@ done:
 #endif
         // scale to fit in uint
         while(fnum >= limf) {
-            fnum /= (float)pint->radix;
+            fnum /= (float)FRADIX;
             exp++;
         }
-        while(fnum*pint->radix < limf) {
-            fnum *= (float)pint->radix;
+        while(fnum*FRADIX < limf) {
+            fnum *= (float)FRADIX;
             exp--;
         }
         // cast to uint
         num = (uint32_t)fnum;
         if(num != 0) {
             // trim trailing zeros so we only have significant digits left
-            while(num%pint->radix == 0) chompnum();
+            while(num%FRADIX == 0) chompnum();
             // count significant digits
             sigc = _puint(pint, num, 0, 1);
         }
@@ -341,7 +352,7 @@ done:
         //if(!(pint->flags & FLAG_ALT)) pint->flags |= FLAG_STRIP0; // strip trailing zeros for 'g' and not alt format
         if(pint->prec == 0) pint->prec++; // ...  if the precision is zero,  it  is  treated  as  1
         roundnum(pint->prec, 1); // ...The precision specifies the number of significant digits we desire in the output
-        while(num%pint->radix == 0) chompnum(); // chomp trailing zeros, will use precision specifier to add them back, if required
+        while(num && num%FRADIX == 0) chompnum(); // chomp trailing zeros, will use precision specifier to add them back, if required
         pad = exp + (sigc - 1); // tmp calculate exponent
         if(pad < -4 || pad >= pint->prec) { // from man page, exponent < -4 or >= precision, render as e otherwise f
             if(pint->flags & FLAG_ALT) {
@@ -595,10 +606,12 @@ int _vprintf(pint_t * pint, const char *format, va_list ap) {
         if(mode == 2) {
             if(c == '*') {
                 // read width from next parm
-                pint->width = va_arg(ap, int);
-                if(pint->width < 0) {
+                int i = va_arg(ap, int);
+                if(i < 0) {
                     pint->flags |= FLAG_MINUS;
-                    pint->width = -pint->width;
+                    pint->width = -i;
+                } else {
+                    pint->width = i;
                 }
                 mode = 4; // skip numeric width parser
                 continue;
@@ -635,7 +648,8 @@ int _vprintf(pint_t * pint, const char *format, va_list ap) {
         if(mode == 5) {
             if(c == '*') {
                 // read precision from next parm
-                pint->prec = va_arg(ap, int);
+                int i = va_arg(ap, int);
+                pint->prec = i < 0 ? 255 : i;
                 mode = 7; // skip numeric precision parser
                 continue;
             }
@@ -670,12 +684,11 @@ int _vprintf(pint_t * pint, const char *format, va_list ap) {
             mode = 8;
             switch(c) {
                 case 'h':
-                    // both promote to int, so ignore modifier
-                    //if(*format == 'h') {
-                    //    // hh?
-                    //    mod = 'H';
-                    //    format++;
-                    //} else mod = 'h';
+                    if(*format == 'h') {
+                        // hh?
+                        mod = 'H';
+                        format++;
+                    } else mod = 'h';
                     continue;
                 case 'l':
                     if(*format == 'l') {
@@ -767,6 +780,18 @@ int _vprintf(pint_t * pint, const char *format, va_list ap) {
                     pint->prec = -1;
                     ret += _printi(pint, errno, 'd');
                     continue;
+                
+                case 'n': {
+                    void * p = va_arg(ap, void*);
+                    switch(mod) {
+                        case 'H': *(int8_t*)p = ret; break;
+                        case 'h': *(int16_t*)p = ret; break;
+                        case 'L': *(int64_t*)p = ret; break;
+                        default: *(int32_t*)p = ret;
+                    }
+                    continue;
+                }
+                    
             }
             // not consumed - output the char instead
             _putc(pint, c);
@@ -817,10 +842,30 @@ int FNPRE(snprintf)(char *str, size_t size, const char *format, ...) {
 }
 
 #ifdef TEST
+
+void stress(void) {
+    for(;;) {
+        float sig = rand()-RAND_MAX/2;
+        float expn = rand()%150-75.0;
+        int width = rand()%50-25;
+        int prec = rand()%20;
+        float num = sig * powf(10.0, expn);
+        tst_printf("sig:%.0f exp:%.0f width:%d prec:%d\n", sig, expn, width, prec);
+        tst_printf     ("g:'%g'\n", num);
+        fprintf(stderr, "g:'%g'\n", num);
+        tst_printf(     "g**:'%*.*g'\n", width, prec, num);
+        fprintf(stderr, "g**:'%*.*g'\n", width, prec, num);
+    }
+}
+
 int main(void) {
     char buf[1000];
     char buf1[1000];
     int i;
+    int8_t nc;
+    int16_t ns;
+    int32_t ni;
+    int64_t nl;
     
     // basic puts
     puts("puts");
@@ -884,9 +929,11 @@ int main(void) {
     TPRINT("foo %% '%.20f' '%.20f' '%.20f' '%.20f'", 1234567890e20f, 432109876543e-20f, 123456789012345.0f, 234567890123456789e5f)
     TPRINT("foo %% '%f' '%f' '%f'", NAN, INFINITY, -INFINITY)
     TPRINT("foo %% '%.0f' '%.0f' '%.0f'", 0.5f, -0.5f, 0.0f)
-    TPRINT("foo %% '%20.0a' '%20.4a' '%20.4a' '%20.4a'", 99.0, 9999999999999.0, 0.099, 12345e-10f)
+    TPRINT("foo %% '%20.0a' '%20.4a' '%20.4a' '%20.4a' 1 %hhn 2  %hn 3  %n 4  %lln 5", 99.0, 9999999999999.0, 0.099, 12345e-10f, &nc, &ns, &ni, &nl)
+    fprintf(stderr, "%d %d %d %lld\n", nc, ns, ni, nl);
 #endif
-    
+    fprintf(stderr, "%d\n", sizeof(pint_t));
+    stress();
     return 0;
 }
 #endif
