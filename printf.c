@@ -54,6 +54,7 @@
 */
 
 //#define BUILD_A
+#define ROUND_UP
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -180,6 +181,7 @@ static int _puint(pint_t * pint, uint32_t num, int decs, int dummy) {
     int ret = 0;
     
     for(;;) {
+        TESTFN(if(ret >= 12) *(int*)0=0;)
         // always output first digit
         tmp[ret++] = num % pint->radix;
         num /= pint->radix;
@@ -204,7 +206,7 @@ static int _printf(pint_t * pint, float fnum, char fmt) {
     int exp = 0;
     int sigc = 1; // default, print the zero
     int pad;
-    int ret = 0;
+    int ret;
     char padc = 0;
     int zeros;
     const float limf = 4000000000.0f;
@@ -220,53 +222,51 @@ static int _printf(pint_t * pint, float fnum, char fmt) {
     // round num to desired number of significant digits (if more are available than the target count)
     // note! rounding may ADD an extra significant digit
     // if force is set, then prune any additional significant digits that were added by rounding
-#if 0
+#ifdef ROUND_UP
+#warning using round_up
     void roundnum(int trg, int force) {
+        if(trg < 0) {
+            num = 0;
+            goto done;
+        }
         if(sigc <= trg) return; // already there...
         // initially, trim until we have one more sigc than required
         while(sigc > trg + 1) chompnum();
+        if(padc == '-') {
+            // negative number, up is towards 0, so number can never get longer
+            chompnum();
+            goto done;
+        }
         // we now have one spare sigc, round it...
-        if(padc == '-')
-           num -= pint->radix/2;
-        else
-           num += pint->radix/2;
+        num += pint->radix/2;
         chompnum(); // now remove this digit
         // recount digits as rounding may have changed things
         sigc = _puint(pint, num, 0, 1);
-        if(force) {
-            // prune further, if rounded up
-            while(sigc > trg) chompnum();
-        }
-        // clean up if rounding resulted in 0
-        if(!num) {
-           exp = 0;
-           sigc = 1;
-        }
+        // prune further, if rounded up
+        if(force) while(sigc > trg) chompnum();
         //fprintf(stderr, "round %f %u %d %d\n", fnum, num, exp, sigc);
+done:
+        if(num == 0) {
+            sigc = 1;
+            exp = 0;
+        }
     }
 #else
+#warning using round_down
     // C99 spec allows implementation defined rounding and we do not have default rounding control in libc
     // so for efficiency, choose round towards 0
     // this also means that significant digits can't increase, so we can skip 'force'
-    void roundnum(int trg) {
-        //fprintf(stderr, "roundi %f %u %d %d %d\n", fnum, num, exp, sigc, trg);
-        if(trg <= 0) {
+    void roundnum(int trg, int force __attribute__((unused))) {
+        if(trg < 0) {
             num = 0;
-            exp = 0;
+            goto done;
+        }
+        while(sigc > trg) chompnum();
+done:
+        if(num == 0) {
             sigc = 1;
-            return;
+            exp = 0;
         }
-        if(sigc <= trg) return; // already there...
-        // initially, trim until we have one more sigc than required
-        while(sigc > trg + 1) chompnum();
-        num -= pint->radix/2;
-        chompnum(); // now remove this digit
-        // clean up if rounding resulted in 0
-        if(!num) {
-           exp = 0;
-           sigc = 1;
-        }
-        //fprintf(stderr, "round %f %u %d %d %d\n", fnum, num, exp, sigc, trg);
     }
 #endif    
     // special cases
@@ -336,26 +336,35 @@ static int _printf(pint_t * pint, float fnum, char fmt) {
     }
     //fprintf(stderr, "%f %u %d %d\n", fnum, num, exp, sigc);
     
-    // pre-process 'g' and morph to 'e' if required
+    // pre-process 'g' and morph to 'e'/'f' as required
     if(fmt == 'g') {
         //if(!(pint->flags & FLAG_ALT)) pint->flags |= FLAG_STRIP0; // strip trailing zeros for 'g' and not alt format
         if(pint->prec == 0) pint->prec++; // ...  if the precision is zero,  it  is  treated  as  1
-        roundnum(pint->prec); // (1) ...The precision specifies the number of significant digits we desire in the output
+        roundnum(pint->prec, 1); // ...The precision specifies the number of significant digits we desire in the output
         while(num%pint->radix == 0) chompnum(); // chomp trailing zeros, will use precision specifier to add them back, if required
         pad = exp + (sigc - 1); // tmp calculate exponent
         if(pad < -4 || pad >= pint->prec) { // from man page, exponent < -4 or >= precision, render as e otherwise f
-            pint->prec--; // prec is total significant digits
+            if(pint->flags & FLAG_ALT) {
+                pint->prec--; // prec is total significant digits
+            } else {
+                pint->prec = sigc - 1;
+            }
             fmt = 'e';
         } else {
+            if(exp < 0) {
+                pint->prec = -exp;
+            } else {
+                pint->prec = 0;
+            }
             fmt = 'f';
         }
     }
-    
     // calculate length, and padding
     if(fmt == 'f') {
         // direct formats
         // if our exponent moves our significant range below precision, then round...
-        if(-exp > pint->prec) roundnum(sigc + (pint->prec + exp)); //(0)
+        pad = pint->prec + exp; // how many we want *minus* how many we have (-exp) - gives us a -ve number telling us how many to remove
+        if(pad < 0) roundnum(sigc + pad, 0); //(0)
         //fprintf(stderr, "%f %u %d %d\n", fnum, num, exp, sigc);
         // how many significant bits before the decimal?
         pad = sigc + exp;
@@ -363,12 +372,12 @@ static int _printf(pint_t * pint, float fnum, char fmt) {
         if(pint->prec > 0) {
             pad += pint->prec + 1;
         } else {
-            if(pint->flags & FLAG_ALT) pint++;
+            if(pint->flags & FLAG_ALT) pad++;
         }
     } else {
         // all other formats are exponent formats
         // round to 1+prec significant digits
-        roundnum(pint->prec + 1); // (1)
+        roundnum(pint->prec + 1, 1); // (1)
         exp += sigc - 1; // final exponent
         // calculate final length
         pad = 5; // 1 digit + e+dd
@@ -382,8 +391,8 @@ static int _printf(pint_t * pint, float fnum, char fmt) {
         } else {
             if(pint->flags & FLAG_ALT) pad++; // no decimals, but force decimal point
         }
-        if(padc) pad++;
     }
+    if(padc) pad++;
     
     // calculate total padding (and set ret to pre-calculated chars)
     if(pint->width > 0 && pad < pint->width) {
@@ -394,7 +403,15 @@ static int _printf(pint_t * pint, float fnum, char fmt) {
         pad = 0;
     }
     // output initial pad
-    if(!(pint->flags & FLAG_MINUS)) _padc(pint, ' ', &pad);
+    if(!(pint->flags & FLAG_MINUS)) {
+        if(pint->flags & FLAG_0) {
+            if(padc) _putc(pint, padc);
+            padc = 0;
+            _padc(pint, '0', &pad);
+        } else {
+            _padc(pint, ' ', &pad);
+        }
+    }
     // output first char
     if(padc) _putc(pint, padc);
     
@@ -455,7 +472,7 @@ static int _printf(pint_t * pint, float fnum, char fmt) {
     }
     
     // if there is any padding left, send it now
-    ret += _padc(pint, ' ', &pad);
+    _padc(pint, ' ', &pad);
     return ret;
 }
 
@@ -690,6 +707,7 @@ int _vprintf(pint_t * pint, const char *format, va_list ap) {
                 pint->flags |= FLAG_CAP;
                 tmpc += 'a' - 'A';
             }
+            if(pint->flags & FLAG_MINUS) pint->flags &= ~(uint8_t)FLAG_0; // ... A  - overrides a 0 if both are given.
             switch(tmpc) {
                 case 's': // S/mod = 'l'; // skip this as we aren't implementing it anyway...
                     // read both as chars, and trust the ouput function to interpret the charset correctly
@@ -856,7 +874,7 @@ int main(void) {
     TPRINT("foo %% '%20.0g' '%20.4g' '%20.4g'", 99.0, 9999999999999.0, 0.099)
     TPRINT("foo %% '%20.0g' '%20.4g' '%20.4g'", 999999.0, 999999.0, 0.099)
     TPRINT("foo %% '%20.0g' '%20.4g' '%20.4g'", 9.999f, 99.99f, 999.9f)
-    TPRINT("foo %% '%20.0g' '%20.4g' '%20.4g'", 99.999f, 999.99f, 9999.9f)
+    TPRINT("foo %% '%-20.0g' '%020.4g' '%20.4g'", 99.999f, -999.99f, 9999.9f)
     TPRINT("foo %% '%#20.0g' '%#20.4g' '%#20.4g'", 99.0, 9999999999999.0, 0.099)
     TPRINT("foo %% '%#20.0g' '%#20.4g' '%#20.4g'", 999999.0, 999999.0, 0.099)
     TPRINT("foo %% '%#20.0g' '%#20.4g' '%#20.4g'", 9.999f, 99.99f, 999.9f)
