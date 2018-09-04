@@ -150,11 +150,8 @@ static int _prints(pint_t * pint, char *s) {
     int ret = 0;
     if(!s) s = "(null)";
     if(pint->width > 0) {
-        if(pint->prec != 255) {
-            pad = strnlen(s, pint->prec);
-        } else {
-            pad = strlen(s);
-        }
+        // don't want to load strlen too...
+        for(pad = 0; (pint->prec == 255 || pad < pint->prec) && s[pad]; pad++);
         if(pad < pint->width) {
             pad = pint->width - pad;
         } else {
@@ -212,7 +209,7 @@ static int _puint(pint_t * pint, uint32_t num, int decs, int dummy) {
 #define FRADIX 10
 #endif
 
-static int _printf(pint_t * pint, float fnum, char fmt) {
+int _printf(pint_t * pint, float fnum, char fmt) {
     uint32_t num = 0;
     int exp = 0;
     int sigc = 1; // default, print the zero
@@ -933,7 +930,7 @@ int main(void) {
     fprintf(stderr, "%d %d %d %lld\n", nc, ns, ni, nl);
 #endif
     fprintf(stderr, "%d\n", sizeof(pint_t));
-    stress();
+    //stress();
     return 0;
 }
 #endif
