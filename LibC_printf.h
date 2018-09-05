@@ -19,13 +19,17 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef _LibC_H_
-#define _LibC_H_
+#ifndef _LIBC_PRINTF_H_
+#define _LIBC_PRINTF_H
 
-#include <stdlib.h>
+#include "local_printf.h"
 
-void *crealloc(void *ptr);
-void printf_setprint(Print * p);
-int pprintf(Print& p, const char *format, ...);
+#ifndef LIBC_PRINTF_NOFLOAT
+#error LIBC_PRINTF_NOFLOAT must be defined before include LibC_printf.h
+#endif
+
+extern "C" int _printf(pint_t * pint, float fnum, char fmt) {
+    return 0;
+}
 
 #endif

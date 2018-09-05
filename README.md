@@ -11,15 +11,27 @@ about any platform.
 
 Just include the following line:
 
+```
 #include <LibC.h>
+```
 
 in your main .ino file.
 
 If you wish to use a static heap allocation for dynamic memory, then include
 the following too:
 
+```
 #define LIBC_HEAP_SIZE 10000 // 10,000 byte heap
 #include <LibC_heap.h>
+```
+
+If you wish to remove float support from the printf library (~1k) then include
+the following lines in your main .ino file:
+
+```
+#define LIBC_PRINTF_NOFLOAT
+#include <LibC_printf.h>
+```
 
 ## Symbols Replaced ##
 
@@ -28,9 +40,9 @@ the following too:
 Since main() cannot exit in Arduino, replace all the following libc symbols 
 with dummies:
 
-atexit
-__cxa_atexit
-exit
+- atexit
+- __cxa_atexit
+- exit
 
 Saves a bit of code and RAM space in many situations.
 
@@ -71,21 +83,68 @@ ptr = crealloc(ptr);
 Will update ptr to the lowest available position in the heap, preserving
 data and size.
 
-Replaced sumbols:
-
-realloc
-malloc
-free
-calloc
-malloc_usable_size
-reallocarray (NOTE: equivallent to realloc - does NOT check size overflow!!)
+Replaced symbols:
+- realloc
+- malloc
+- free
+- calloc
+- malloc_usable_size
+- reallocarray (NOTE: equivallent to realloc - does NOT check size overflow!!)
 
 The following symbols are not implemented and are replaced with functions
-which produce an instant memory fault.
+which produce an instant memory fault:
+- posix_memalign
+- aligned_alloc
+- valloc
+- memalign
+- pvalloc
 
-posix_memalign
-aligned_alloc
-valloc
-memalign
-pvalloc
+### printf.c ###
 
+Replace all printf/sprintf functions with my own implementation.  Primary
+target is minimum flash usage with a full C feature set.
+
+Usage:
+
+Two APIs:
+
+_New function pprinf which takes any Print class as a first parameter._
+
+pprintf(Serial, "Use Serial explicitly as a print device...\n");
+
+_Normal printf with a function to set which Print class will receive the output._
+
+printf_setprint(&Serial);
+printf("Use Serial by setting it as the system print device...\n");
+
+Replaced symbols:
+- printf
+- puts
+- sprintf
+- snprintf
+- vprintf
+- vsprintf
+- vsnprintf
+
+New symbols:
+
+_void printf_setprint(Print * p);_
+
+Designate an initialised Print class (eg Serial, GFX, Wire, etc) as the target for printf and vprintf calls.
+
+_int pprintf(Print& p, const char *format, ...);_
+
+As for fprintf, but the first argument is an initialised Print class.
+
+
+Implementation is fairly complete, and if used exclusively is substantially 
+cheaper in flash and stack than the Print class functions, while still
+providing substantial formatting capabilities.
+
+Primary restrictions:
+- only supports 32bit types (64bit ints, and doubles are cast down to 32/float)
+- floats are calculated in place back to decimal representation - precision suffers after 8 significant digits
+- 'a' format is functional, but formatting is not complete - not compiled by default
+- m$ width and precision formats are not handled and treated as unset
+- width is limited to 255 and precision 254
+- 'g' my interpretation of precision differs from libc - mine as correct as I interpret the spec
