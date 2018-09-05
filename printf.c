@@ -361,7 +361,6 @@ done:
         // then shifed right by one
         // so one of 31,30,29,28,27 is the top bit
         // result is either 9 or 10 significant digits
-        // dang
         if(num >= 1000000000U) {
             sigc = 10;
         } else {
