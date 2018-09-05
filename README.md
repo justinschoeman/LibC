@@ -28,9 +28,9 @@ the following too:
 Since main() cannot exit in Arduino, replace all the following libc symbols 
 with dummies:
 
-atexit
-__cxa_atexit
-exit
+- atexit
+- __cxa_atexit
+- exit
 
 Saves a bit of code and RAM space in many situations.
 
@@ -72,20 +72,20 @@ Will update ptr to the lowest available position in the heap, preserving
 data and size.
 
 Replaced symbols:
--realloc
--malloc
--free
--calloc
--malloc_usable_size
--reallocarray (NOTE: equivallent to realloc - does NOT check size overflow!!)
+- realloc
+- malloc
+- free
+- calloc
+- malloc_usable_size
+- reallocarray (NOTE: equivallent to realloc - does NOT check size overflow!!)
 
 The following symbols are not implemented and are replaced with functions
 which produce an instant memory fault:
--posix_memalign
--aligned_alloc
--valloc
--memalign
--pvalloc
+- posix_memalign
+- aligned_alloc
+- valloc
+- memalign
+- pvalloc
 
 ### printf.c ###
 
@@ -106,26 +106,26 @@ printf_setprint(&Serial);
 printf("Use Serial by setting it as the system print device...\n");
 
 Replaced symbols:
--printf
--puts
--sprintf
--snprintf
--vprintf
--vsprintf
--vsnprintf
+- printf
+- puts
+- sprintf
+- snprintf
+- vprintf
+- vsprintf
+- vsnprintf
 
 New symbols:
--printf_setprint
--pprintf
+- printf_setprint
+- pprintf
 
 Implementation is fairly complete, and if used exclusively is substantially 
 cheaper in flash and stack than the Print class functions, while still
 providing substantial formatting capabilities.
 
 Primary restrictions:
--only supports 32bit types (64bit ints, and doubles are cast down to 32/float)
--floats are calculated in place back to decimal representation - precision suffers after 8 significant digits
--'a' format is functional, but formatting is not complete - not compiled by default
--m$ width and precision formats are not handled and treated as unset
--width is limited to 255 and precision 254
--'g' my interpretation of precision differs from libc - mine as correct as I interpret the spec
+- only supports 32bit types (64bit ints, and doubles are cast down to 32/float)
+- floats are calculated in place back to decimal representation - precision suffers after 8 significant digits
+- 'a' format is functional, but formatting is not complete - not compiled by default
+- m$ width and precision formats are not handled and treated as unset
+- width is limited to 255 and precision 254
+- 'g' my interpretation of precision differs from libc - mine as correct as I interpret the spec
