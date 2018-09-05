@@ -20,6 +20,11 @@
  */
 
 /*
+    Compile as follows to test...
+    gcc -DTEST -Os -g -Wall -o printf printf.c -lm
+*/
+
+/*
     NOTES
     
     I have decided to cleanroom this, rather than reuse work which was partially done
@@ -29,27 +34,25 @@
     1. Output failures are not tracked/counted. Return value is the number of characters 
     that _should have_ been printed.
     
-    2. Does NOT handle *m$ style positional width/precision parameters!
+    2. Limited precision - 64 bit ints are truncated to 32, doubles to floats
     
-    3. Limited precision - 64 bit ints are truncated to 32, doubles to floats
-    
-    4. Floats are cast back to int32 for rendering - if there are two many digits, zeros
+    3. Floats are cast back to int32 for rendering - if there are two many digits, zeros
     are appended (and possibly decimals are reduced) - PRECISION IS LOST ON LARGE FLOATS!
     
-    5. targets 32 bit processors, so all modifiers which promote to int are ignored
+    4. targets 32 bit processors, so all modifiers which promote to int are ignored
     
-    6. 'a' format is not not complete - optionally compiled out to save space
+    5. 'a' format is not not complete - optionally compiled out to save space
     
-    7. All 'capital letter' formats are handled, even if not valid (translated to lower
+    6. All 'capital letter' formats are handled, even if not valid (translated to lower
     case equivalent)
     
-    8. m$ width/precision are parsed, but treated as unset...
+    7. m$ width/precision are parsed, but treated as unset...
     
-    9. floating point precision is limited to 8 decimals
+    8. floating point precision is limited to 8 decimals
     
-    10. 'g' is currently treated as 'e' need to clarify operation...
+    9. 'g' precision interpretation differs from gcc - can't understand gccs interpretation
     
-    11. width is limited to 255, precision to 254
+    10. width is limited to 255, precision to 254
     
 */
 
@@ -73,12 +76,6 @@
 #define FLAG_PLUS	0x00000010U
 //#define FLAG_STRIP0	0x00000020U
 #define FLAG_CAP	0x00000040U
-
-
-/*
-    Compile as follows to test...
-    gcc -DTEST -g -Wall -o printf printf.c
-*/
 
 
 #ifdef TEST
@@ -121,7 +118,7 @@ int putchar(int c) {
 extern void _pprintf_putchar(void * p, int c);
 static void _putc(pint_t * pint, int c) {
     if(pint->sptr) {
-        if(pint->scnt == (size_t)-1) {
+        if(pint->scnt == (size_t)-1) { // magic marker
             _pprintf_putchar(pint->sptr, c);
             return;
         }
@@ -172,7 +169,7 @@ static int _prints(pint_t * pint, char *s) {
 // was trying to be 'eficient' by doing this without temp storage, but the cost in flash is way
 // too high considering the stack saving.
 // at worst 32 bit octal will be 11 digits, plus the one potential decimal (which can't happen with octal
-// but is a potential input, so cater for it...
+// but is a potential input, so cater for it...)
 // DECS MUST NEVER BE BIGGER THAN 10
 static int _puint(pint_t * pint, uint32_t num, int decs, int dummy) {
     int8_t tmp[12];
@@ -180,6 +177,7 @@ static int _puint(pint_t * pint, uint32_t num, int decs, int dummy) {
     
     for(;;) {
         TESTFN(if(ret >= 12) *(int*)0=0;)
+        TESTFN(if(decs >= 10) *(int*)0=0;)
         // always output first digit
         tmp[ret++] = num % pint->radix;
         num /= pint->radix;
@@ -190,29 +188,31 @@ static int _puint(pint_t * pint, uint32_t num, int decs, int dummy) {
     if(dummy) return ret;
     // now spit em out in reverse order
     for(decs = ret - 1; decs >= 0; decs--) {
+        int8_t hofs = pint->flags & FLAG_CAP ? 'A' - ':' : 'a' - ':';
         dummy = tmp[decs];
-        //_putc(pint, ' ');
-        //_putc(pint, '0'+dummy/100);
-        //_putc(pint, '0'+(dummy/10)%10);
-        //_putc(pint, '0'+dummy%10);
-        //_putc(pint, ' ');
         dummy += '0';
-        if(dummy > '9') dummy += pint->flags & FLAG_CAP ? 'A' - ':' : 'a' - ':';
+        if(dummy > '9') dummy += hofs;
         _putc(pint, dummy);
     }
     return ret;
 }
 
+// build with constant radix if we are not building 'a' support...
 #ifdef BUILD_A
 #define FRADIX pint->radix
 #else
 #define FRADIX 10
 #endif
 
-int _printf(pint_t * pint, float fnum, char fmt) {
-    uint32_t num = 0;
+// previous implememntation used floating point manipulation to get the numbers in the right
+// significant range for rendering
+// changing this to do a direct transform from fp format by incrementally moving e2 bits to number
+// and back to e10...
+// make weak so we can remove this if we don't want floats...
+int __attribute__((weak)) _printf(pint_t * pint, float fnum, char fmt) {
+    uint32_t num;
     int exp = 0;
-    int sigc = 1; // default, print the zero
+    int sigc;
     int pad;
     int ret;
     char padc = 0;
@@ -220,7 +220,7 @@ int _printf(pint_t * pint, float fnum, char fmt) {
     const float limf = 4000000000.0f;
     //const float limf = 4000.0f;
     
-    // strip least significant digit
+    // strip least significant digit while preserving absolute value
     void chompnum(void) {
         num /= FRADIX;
         sigc--;
@@ -277,72 +277,101 @@ done:
         }
     }
 #endif    
-    // special cases
-    zeros = isinf(fnum);
-    if(zeros || isnan(fnum)) {
-        static char infstr[] = "inf";
-        static char ninfstr[] = "-inf";
-        static char nanstr[] = "nan";
-        char * s;
-        pint->prec = 255;
-        if(zeros > 0) {
-            s = infstr;
-        } else if(zeros < 0) {
-            s = ninfstr;
+
+    // convert float to sig + exp10
+    for(;;) {	// fake for loop, so we can break out when we get a number...
+        union { float f; uint32_t u; } unum = { .f = fnum }; // need bitwise access to float
+        int e2;
+        // strip sign
+        if(unum.u & 0x80000000U) {
+            padc = '-';
         } else {
-            s = nanstr;
+            if(pint->flags & FLAG_SPACE) padc = ' ';
+            if(pint->flags & FLAG_PLUS) padc = '+';
         }
-        return _prints(pint, s);
-    }
-    
-    // strip off sign
-    if(fnum < 0) {
-        padc = '-';
-        fnum = -fnum;
-    } else {
-        if(pint->flags & FLAG_SPACE) padc = ' ';
-        if(pint->flags & FLAG_PLUS) padc = '+';
-    }
-    // seems to be a common definition for all sub formats
-    if(pint->prec == 255) pint->prec = 6;
-    
-    // before we do anything else, convert to a uint with as many significant digits as possible...
-    // no rounding yet, as we are packing a 23bit significand into 32 bits...
-    // 2^32-1 = 4,294,967,295 - final rounding may bump up last digit, so 3,999,999,999 is the limit
-    while(fnum != 0.0f) { // otherwise defaults to 0e0 .. FAKE WHILE LOOP SO WE CAN BREAK OUT AFTER SPECIAL FORMATS
+        // strip significand (lower 23 bits)
+        num = unum.u & 0x7fffff;
+        // strip exponent2
+        e2 = (unum.u >> 23) & 0xff;
+        // special cases...
+        // zero
+        if(num == 0 && e2 == 0) {
+            sigc = 1;
+            break;
+        }
+        if(e2 == 255) {
+            static char infstr[] = "inf";
+            static char ninfstr[] = "-inf";
+            static char nanstr[] = "nan";
+            char * s;
+            if(num) {
+                s = nanstr;
+            } else if(padc == '-') {
+                s = ninfstr;
+            } else {
+                s = infstr;
+            }
+            pint->prec = 255;
+            return _prints(pint, s);
+        }
+        // normalised floats skip the leading '1'
+        if(e2) { // e2 = 0, num non zero is denormalised!
+            num |= 0x800000;
+        } else {
+            e2++; // leading digit becomes significant
+        }
+        // include 'a' format?
 #ifdef BUILD_A
         if(fmt == 'a') {
             // formatting not complete yet
-            union { float f; uint32_t u; } unum = { .f = fnum };
-            num = unum.u & 0x7fffff;
-            num |= 0x800000;
             num <<= 1; // normailse (the 1 bit we added is the only one before the decimal)
-            exp = (unum.u >> 23) & 0xff;
-            exp -= 127 + 6;
+            exp = e2 - (127 + 6);
             sigc = 7;
             break;
         }
 #endif
-        // scale to fit in uint
-        while(fnum >= limf) {
-            fnum /= (float)FRADIX;
-            exp++;
+        // remove exponent bias (we treat the whole 24 bits as significant, so we need to multiply by 2^-23 to get the real value)
+        e2 -= 127 + 23;
+        //TESTFN(fprintf(stderr, "'%.20g' %d %d '%.20g'\n", fnum, num, e2, (double)num*pow(2.0,(double)e2));)
+        // move e2 to exp by progressively multiplying/dividing by 2/10 to keep total number constant
+        // n = sig * 2^e2 * 10^exp ... start with exp=0 (10^0 = 1) and move to e2=0 (2^0 = 0) so we can eliminate the e2 term
+        // plenty of optimisations to do, eg:
+        // use seperate 32 bit multiplier, rather than multiplying in place (and final 64 bit calc)
+        // start with biggest offset
+        // consume 3 bits at a time
+        // but goal is smallest code/ram space, so use non-optimal route...
+        // do least likely case first, as last case can be a little more optimised
+        while(e2 > 0) { // every time we reduce e2 by 1, we must multiply num by 2 to compensate
+            e2--;
+            if(num & 0x80000000U) {
+                num /= 10;
+                exp++;
+            }
+            num <<= 1;
         }
-        while(fnum*FRADIX < limf) {
-            fnum *= (float)FRADIX;
-            exp--;
+        while(e2++ < 0) { // every time we increase e2 by 1, we must divide num by 2 to compensate
+            while(!(num & 0xf0000000U)) { //sub normal numbers need to be shifted up...
+                num *= 10;
+                exp--;
+            }
+            num >>= 1;
         }
-        // cast to uint
-        num = (uint32_t)fnum;
-        if(num != 0) {
-            // trim trailing zeros so we only have significant digits left
-            while(num%FRADIX == 0) chompnum();
-            // count significant digits
-            sigc = _puint(pint, num, 0, 1);
+        //TESTFN(fprintf(stderr, "'%.20g' %d %d '%.20g'\n", fnum, num, exp, (double)num*pow(10.0,(double)exp));)
+        // num is increased until one of 31,30,29,28 are set
+        // then shifed right by one
+        // so one of 31,30,29,28,27 is the top bit
+        // result is either 9 or 10 significant digits
+        if(num >= 1000000000U) {
+            sigc = 10;
+        } else {
+            sigc = 9;
         }
         break;
     }
-    //fprintf(stderr, "%f %u %d %d\n", fnum, num, exp, sigc);
+    //TESTFN(fprintf(stderr, "%f %u %d %d\n", fnum, num, exp, sigc);)
+
+    // seems to be a common definition for all sub formats
+    if(pint->prec == 255) pint->prec = 6;
     
     // pre-process 'g' and morph to 'e'/'f' as required
     if(fmt == 'g') {
@@ -838,6 +867,25 @@ int FNPRE(snprintf)(char *str, size_t size, const char *format, ...) {
     return ret;
 }
 
+int FNPRE(vprintf)(const char *format, va_list ap) {
+    pint_t pint = {0};
+    return _vprintf(&pint, format, ap);
+}
+
+int FNPRE(vsprintf)(char *str, const char *format, va_list ap) {
+    pint_t pint = {0};
+    pint.sptr = str;
+    pint.scnt = 0x7fffffff; // effectively unlimited...
+    return _vprintf(&pint, format, ap);
+}
+
+int FNPRE(vsnprintf)(char *str, size_t size, const char *format, va_list ap) {
+    pint_t pint = {0};
+    pint.sptr = str;
+    pint.scnt = size;
+    return _vprintf(&pint, format, ap);
+}
+
 #ifdef TEST
 
 void stress(void) {
@@ -882,11 +930,8 @@ int main(void) {
     printf("test (%d): '%s'\n", i, buf1); \
     if(strncmp(buf, buf1, sizeof(buf)) != 0) printf("############################### FAIL ###############################\n");
     
-    //TPRINT("foo %% '%0*.*s' '%10.2s' '%s' '%10s' %c", 20,10,"barbarbroomba", (char*)NULL, (char*)NULL, (char*)NULL, 65)
-
-    TPRINT("foo %% '% +-*.*d' %c", 20,15,-0x7fffffff, 65)
-
 #if 1
+    TPRINT("foo %% '% +-*.*d' %c", 20,15,-0x7fffffff, 65)
     TPRINT("foo %% '%#015X'", 0x7fffffff)
     TPRINT("foo %% '%#015X'", 0x8fffffff)
     TPRINT("foo %% '%#015.12X'", 0x8fffffff)
@@ -928,9 +973,12 @@ int main(void) {
     TPRINT("foo %% '%.0f' '%.0f' '%.0f'", 0.5f, -0.5f, 0.0f)
     TPRINT("foo %% '%20.0a' '%20.4a' '%20.4a' '%20.4a' 1 %hhn 2  %hn 3  %n 4  %lln 5", 99.0, 9999999999999.0, 0.099, 12345e-10f, &nc, &ns, &ni, &nl)
     fprintf(stderr, "%d %d %d %lld\n", nc, ns, ni, nl);
+    TPRINT("foo '%s' '%10s' '%010s' '%-10s' bar", "abcdefg", "abcdefg", "abcdefg", "abcdefg")
+    TPRINT("foo '%s' '%10s' '%010s' '%-10s' bar", "abcdefgabcdefg", "abcdefgabcdefg", "abcdefgabcdefg", "abcdefgabcdefg")
+    TPRINT("foo '%s' '%10.5s' '%010.5s' '%-10.5s' bar", "abcdefgabcdefg", "abcdefgabcdefg", "abcdefgabcdefg", "abcdefgabcdefg")
 #endif
-    fprintf(stderr, "%d\n", sizeof(pint_t));
-    //stress();
+    tst_printf("%f\n", 1e32f);
+    stress();
     return 0;
 }
 #endif
