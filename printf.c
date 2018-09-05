@@ -57,7 +57,7 @@
 */
 
 //#define BUILD_A
-#define ROUND_UP
+//#define ROUND_UP
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -81,6 +81,7 @@
 #ifdef TEST
 #include <assert.h>
 #include <stdlib.h>
+#include <fenv.h>
 #define FNPRE(x) tst_ ## x
 #define TESTFN(x) x
 // need prototypes for test variants
@@ -349,11 +350,15 @@ done:
             }
             num <<= 1;
         }
-        while(e2++ < 0) { // every time we increase e2 by 1, we must divide num by 2 to compensate
+        // may not have enough significant digits yet...
+        // split up this loop so normalisation always runs
+        // every time we increase e2 by 1, we must divide num by 2 to compensate
+        for(;;) { 
             while(!(num & 0xf0000000U)) { //sub normal numbers need to be shifted up...
                 num *= 10;
                 exp--;
             }
+            if(e2++ >= 0) break;
             num >>= 1;
         }
         //TESTFN(fprintf(stderr, "'%.20g' %d %d '%.20g'\n", fnum, num, exp, (double)num*pow(10.0,(double)exp));)
@@ -361,6 +366,7 @@ done:
         // then shifed right by one
         // so one of 31,30,29,28,27 is the top bit
         // result is either 9 or 10 significant digits
+        // dang
         if(num >= 1000000000U) {
             sigc = 10;
         } else {
@@ -889,6 +895,8 @@ int FNPRE(vsnprintf)(char *str, size_t size, const char *format, va_list ap) {
 #ifdef TEST
 
 void stress(void) {
+    char b1[100];
+    char b2[100];
     for(;;) {
         float sig = rand()-RAND_MAX/2;
         float expn = rand()%150-75.0;
@@ -900,6 +908,13 @@ void stress(void) {
         fprintf(stderr, "g:'%g'\n", num);
         tst_printf(     "g**:'%*.*g'\n", width, prec, num);
         fprintf(stderr, "g**:'%*.*g'\n", width, prec, num);
+        tst_snprintf(b1, sizeof(b1), "%.2e", num);
+        snprintf    (b2, sizeof(b2), "%.2e", num);
+        // rounding can differ
+        b1[strlen(b1)-5]='x';
+        b2[strlen(b2)-5]='x';
+        fprintf(stderr, "expcomp:\n'%s'\n'%s'\n", b1, b2);
+        if(strcmp(b1, b2) != 0) *(int*)0=0;
     }
 }
 
@@ -911,6 +926,9 @@ int main(void) {
     int16_t ns;
     int32_t ni;
     int64_t nl;
+    
+    // set glibc to round towards 0
+    fesetround(FE_TOWARDZERO );
     
     // basic puts
     puts("puts");
