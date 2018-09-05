@@ -100,7 +100,7 @@ _New function pprinf which takes any Print class as a first parameter._
 
 pprintf(Serial, "Use Serial explicitly as a print device...\n");
 
-_Normal printf with a function to set which Print class will receive the output. _
+_Normal printf with a function to set which Print class will receive the output._
 
 printf_setprint(&Serial);
 printf("Use Serial by setting it as the system print device...\n");
