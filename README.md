@@ -115,8 +115,15 @@ Replaced symbols:
 - vsnprintf
 
 New symbols:
-- printf_setprint
-- pprintf
+
+_void printf_setprint(Print * p);_
+
+Designate an initialised Print class (eg Serial, GFX, Wire, etc) as the target for printf and vprintf calls.
+
+_int pprintf(Print& p, const char *format, ...);_
+
+As for fprintf, but the first argument is an initialised Print class.
+
 
 Implementation is fairly complete, and if used exclusively is substantially 
 cheaper in flash and stack than the Print class functions, while still
