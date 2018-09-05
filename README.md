@@ -11,15 +11,27 @@ about any platform.
 
 Just include the following line:
 
+```
 #include <LibC.h>
+```
 
 in your main .ino file.
 
 If you wish to use a static heap allocation for dynamic memory, then include
 the following too:
 
+```
 #define LIBC_HEAP_SIZE 10000 // 10,000 byte heap
 #include <LibC_heap.h>
+```
+
+If you wish to remove float support from the printf library (~1k) then include
+the following lines in your main .ino file:
+
+```
+#define LIBC_PRINTF_NOFLOAT
+#include <LibC_printf.h>
+```
 
 ## Symbols Replaced ##
 
