@@ -266,12 +266,7 @@ done:
     // so for efficiency, choose round towards 0
     // this also means that significant digits can't increase, so we can skip 'force'
     void roundnum(int trg, int force __attribute__((unused))) {
-        if(trg < 0) {
-            num = 0;
-            goto done;
-        }
         while(sigc > trg) chompnum();
-done:
         if(num == 0) {
             sigc = 1;
             exp = 0;
