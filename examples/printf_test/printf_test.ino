@@ -1,5 +1,9 @@
 #include <LibC.h>
 
+// uncomment the following instructions to remove float support
+//#define LIBC_PRINTF_NOFLOAT
+//#include <LibC_printf.h>
+
 void setup()
 {
   Serial.begin(115200);
