@@ -58,6 +58,7 @@
 
 //#define BUILD_A
 //#define ROUND_UP
+//#define FLOAT2
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -315,6 +316,13 @@ done:
             num |= 0x800000;
         } else {
             e2++; // leading digit becomes significant
+#ifdef FLOAT2
+            // for FLOAT2 method, num must have precisely 24 significant digits
+            while(!(num & 0x800000)) {
+                num <<= 1;
+                e2--;
+            }
+#endif
         }
         // include 'a' format?
 #ifdef BUILD_A
@@ -328,7 +336,7 @@ done:
 #endif
         // remove exponent bias (we treat the whole 24 bits as significant, so we need to multiply by 2^-23 to get the real value)
         e2 -= 127 + 23;
-        //TESTFN(fprintf(stderr, "'%.20g' %d %d '%.20g'\n", fnum, num, e2, (double)num*pow(2.0,(double)e2));)
+        TESTFN(fprintf(stderr, "a '%.20g' %u %d '%.20g'\n", fnum, num, e2, (double)num*pow(2.0,(double)e2));)
         // move e2 to exp by progressively multiplying/dividing by 2/10 to keep total number constant
         // n = sig * 2^e2 * 10^exp ... start with exp=0 (10^0 = 1) and move to e2=0 (2^0 = 0) so we can eliminate the e2 term
         // plenty of optimisations to do, eg:
@@ -337,6 +345,43 @@ done:
         // consume 3 bits at a time
         // but goal is smallest code/ram space, so use non-optimal route...
         // do least likely case first, as last case can be a little more optimised
+#ifdef FLOAT2
+        // num is precisely 24 bits, all significant
+        num <<= 8;
+        e2 -= 7;
+        // now 32 bits, one fractional
+        TESTFN(fprintf(stderr, "b '%.20g' %u %d '%.20g'\n", fnum, num, e2, (double)num*pow(2.0,(double)(e2-1)));)
+        // num2 is 32 bits, lower 31 are fractional
+        uint32_t num2 = 0x80000000U; //1.0
+        while(e2 > 0) { // every time we reduce e2 by 1, we must multiply num by 2 to compensate
+            e2--;
+            if(num2 & 0x80000000U) {
+                num2 /= 5;
+                exp++;
+            } else {
+                num2 <<= 1;
+            }
+        }
+        while(e2++ < 0) { 
+            if(!(num2 & 0xf0000000U)) {
+                num2 *= 5;
+                exp--;
+            } else {
+                num2 >>= 1;
+            }
+        }
+        uint64_t t64 = (uint64_t)num * (uint64_t)num2; // 32, 1 fractional + 32 bits, 31 fractional = 64,32
+        num = t64 >> 32;
+        TESTFN(fprintf(stderr, "'%.20g' %u %d '%.20g'\n", fnum, num, exp, (double)num*pow(10.0,(double)exp));)
+        if(num >= 1000000000U) {
+            sigc = 10;
+        } else if(num >= 100000000U) {
+            sigc = 9;
+        } else {
+            sigc = 8;
+        }
+        break;
+#else
         while(e2 > 0) { // every time we reduce e2 by 1, we must multiply num by 2 to compensate
             e2--;
             if(num & 0x80000000U) {
@@ -356,7 +401,7 @@ done:
             if(e2++ >= 0) break;
             num >>= 1;
         }
-        //TESTFN(fprintf(stderr, "'%.20g' %d %d '%.20g'\n", fnum, num, exp, (double)num*pow(10.0,(double)exp));)
+        //TESTFN(fprintf(stderr, "'%.20g' %u %d '%.20g'\n", fnum, num, exp, (double)num*pow(10.0,(double)exp));)
         // num is increased until one of 31,30,29,28 are set
         // then shifed right by one
         // so one of 31,30,29,28,27 is the top bit
@@ -367,8 +412,9 @@ done:
             sigc = 9;
         }
         break;
+#endif
     }
-    //TESTFN(fprintf(stderr, "%f %u %d %d\n", fnum, num, exp, sigc);)
+    TESTFN(fprintf(stderr, "%f %u %d %d\n", fnum, num, exp, sigc);)
 
     // seems to be a common definition for all sub formats
     if(pint->prec == 255) pint->prec = 6;
@@ -942,7 +988,7 @@ int main(void) {
     printf("test (%d): '%s'\n", i, buf1); \
     if(strncmp(buf, buf1, sizeof(buf)) != 0) printf("############################### FAIL ###############################\n");
     
-#if 1
+#if 0
     TPRINT("foo %% '% +-*.*d' %c", 20,15,-0x7fffffff, 65)
     TPRINT("foo %% '%#015X'", 0x7fffffff)
     TPRINT("foo %% '%#015X'", 0x8fffffff)
@@ -989,7 +1035,7 @@ int main(void) {
     TPRINT("foo '%s' '%10s' '%010s' '%-10s' bar", "abcdefgabcdefg", "abcdefgabcdefg", "abcdefgabcdefg", "abcdefgabcdefg")
     TPRINT("foo '%s' '%10.5s' '%010.5s' '%-10.5s' bar", "abcdefgabcdefg", "abcdefgabcdefg", "abcdefgabcdefg", "abcdefgabcdefg")
 #endif
-    tst_printf("%f\n", 1e32f);
+    //tst_printf("%g\n", 1e-45f);
     stress();
     return 0;
 }
