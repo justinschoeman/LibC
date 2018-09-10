@@ -58,6 +58,7 @@
 
 //#define BUILD_A
 //#define ROUND_UP
+#define ROUND_EVEN
 //#define FLOAT2
 
 #include <stdio.h>
@@ -219,8 +220,6 @@ int __attribute__((weak)) _printf(pint_t * pint, float fnum, char fmt) {
     int ret;
     char padc = 0;
     int zeros;
-    const float limf = 4000000000.0f;
-    //const float limf = 4000.0f;
     
     // strip least significant digit while preserving absolute value
     void chompnum(void) {
@@ -232,6 +231,32 @@ int __attribute__((weak)) _printf(pint_t * pint, float fnum, char fmt) {
     // round num to desired number of significant digits (if more are available than the target count)
     // note! rounding may ADD an extra significant digit
     // if force is set, then prune any additional significant digits that were added by rounding
+#ifdef ROUND_EVEN
+#warning using round_even
+    void roundnum(int trg, int force) {
+        int ld = 0; // 0 has same effect as not trimmed, and implicit initialiser may be cheaper...
+        // chomp tail preserving last digit removed...
+        while(sigc > trg) {
+            ld = num % FRADIX;
+            chompnum();
+        }
+        // we chomped at least one digit
+        if(ld > 5 || (ld == 5 && (num&1))) {
+            // last digit is greater than 5, or equal to 5 and current number is odd = round up
+            num++;
+            // recount digits as rounding may have changed things
+            sigc = _puint(pint, num, 0, 1);
+            // prune further, if rounded up
+            if(force) while(sigc > trg) chompnum();
+        } // in any other case, we want to round down, or can't do anything...
+        fprintf(stderr, "round %g %u %d %d %d\n", fnum, num, ld, exp, sigc);
+done:
+        if(num == 0) {
+            sigc = 1;
+            exp = 0;
+        }
+    }
+#else
 #ifdef ROUND_UP
 #warning using round_up
     void roundnum(int trg, int force) {
@@ -273,7 +298,8 @@ done:
             exp = 0;
         }
     }
-#endif    
+#endif
+#endif
 
     // convert float to sig + exp10
     for(;;) {	// fake for loop, so we can break out when we get a number...
@@ -968,7 +994,13 @@ int main(void) {
     int64_t nl;
     
     // set glibc to round towards 0
-    fesetround(FE_TOWARDZERO );
+#ifdef ROUND_EVEN
+    fesetround(FE_TONEAREST);
+#else
+#ifndef ROUND_UP
+    fesetround(FE_TOWARDZERO);
+#endif
+#endif
     
     // basic puts
     puts("puts");
